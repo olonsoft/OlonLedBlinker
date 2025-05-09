@@ -1,11 +1,11 @@
 #pragma once
 #include <Arduino.h>
 
-#define OLON_LED_BLINKER_VERSION "1.0.0"
+#define OLON_LED_BLINKER_VERSION "1.1.1"
 namespace Olon {
 class LedBlinker {
  public:
-  // Some general predefined 20 bit patterns
+  // Predefined 20-bit patterns for different states
   enum Pattern : uint32_t {
     SPEED_VERY_SLOW = 0b00000000001111111111,
     SPEED_SLOW      = 0b00000111110000011111,  // captive portal running
@@ -17,117 +17,125 @@ class LedBlinker {
     MQTT_ERROR      = 0b00001111000100010001
   };
 
-  LedBlinker(uint8_t led_pin, bool active_state) : _led_pin{led_pin}, _active_state{active_state} {
-    pinMode(_led_pin, OUTPUT);
-    digitalWrite(_led_pin, !_active_state);  // turn off led
+  LedBlinker(uint8_t led_pin = LED_BUILTIN, bool active_state = HIGH) : _ledPin{led_pin}, _activeState{active_state} {
+    pinMode(_ledPin, OUTPUT);
+    digitalWrite(_ledPin, !_activeState);  // turn off LED
   }
 
-  void setPattern(uint32_t pattern, uint8_t pattern_length = 20, uint32_t msecs_per_bit = 100,
+  // Set a new blinking pattern
+  void setPattern(uint32_t pattern, uint8_t patternLength = 20, uint32_t msecsPerBit = 100,
                   uint8_t repetitions = 0) {
-    if (_locked)
+    if (_locked || patternLength > 32 || patternLength == 0 || msecsPerBit == 0) {
       return;
-    if (pattern_length > 32)
-      return;
-    if (_pattern != pattern || _pattern_length != pattern_length ||
-        _msecs_per_bit != msecs_per_bit || repetitions > 0 || _pattern_status == finished) {
+    }
+    if (_pattern != pattern || _patternLength != patternLength ||
+        _msecsPerBit != msecsPerBit || repetitions > 0 || _patternStatus == Finished) {
       // start new pattern
       _pattern        = pattern;
-      _pattern_length = pattern_length;
-      _msecs_per_bit  = msecs_per_bit;
+      _patternLength = patternLength;
+      _msecsPerBit  = msecsPerBit;
       _repetitions    = repetitions;
-      _pattern_status = startNew;
+      _patternStatus = StartNew;
     }
   }
 
   void setOn() {
     if (_locked)
       return;
-    if (_led_state == LOW) {
-      _led_state = HIGH;
-      digitalWrite(_led_pin, _active_state);
+    if (_ledState == LOW) {
+      _ledState = HIGH;
+      digitalWrite(_ledPin, _activeState);
     }
-    _pattern_status = finished;
+    _patternStatus = Finished;
   }
 
   void setOff() {
-    if (_locked)
-      return;
-    if (_led_state == HIGH) {
-      _led_state = LOW;
-      digitalWrite(_led_pin, !_active_state);
+    if (_locked) return;
+    if (_ledState == HIGH) {
+      _ledState = LOW;
+      digitalWrite(_ledPin, !_activeState);
     }
-    _pattern_status = finished;
+    _patternStatus = Finished;
   }
 
-  bool busy() {
-    return (_pattern_status != finished);
+  // Check if a pattern is currently active
+  bool isBusy() {
+    return (_patternStatus != Finished);
   }
 
   void lock(bool locked) {
     _locked = locked;
   }
 
-  void loop() {
-    static bool     wait_for_next_bit  = false;
-    static uint32_t last_time          = 0;
-    static uint8_t  current_bit        = 0;
-    static uint8_t  current_repetition = 0;
-
-    if (_pattern_status == startNew) {
-      _pattern_status    = processing;
-      wait_for_next_bit  = false;
-      last_time          = 0;
-      current_bit        = 0;
-      current_repetition = 0;
-    } else if (_pattern_status == finished) {
-      return;
-    }
-
-    if (!wait_for_next_bit) {
-      // bool bit_state = (((_pattern) & (1ULL << _current_bit)) != 0);
-      bool bit_state = bitRead(_pattern, current_bit);
-      if (bit_state != _led_state) {
-        _led_state = bit_state;
-        digitalWrite(_led_pin, _led_state ? _active_state : !_active_state);
-      }
-      last_time         = millis();
-      wait_for_next_bit = true;
-    } else {  // waiting msecs for next bit
-      if (millis() - last_time > _msecs_per_bit) {
-        // ready to process the next bit
-        current_bit++;
-        wait_for_next_bit = false;
-        // if finished the pattern
-        if (current_bit >= _pattern_length) {
-          current_bit = 0;
-
-          if (_repetitions > 0) {
-            if (++current_repetition >= _repetitions) {
-              _pattern_status = finished;
-              setOff();
-            }
-          }
-        }
-      }
+  // Pause the current pattern
+  void pause() {
+    if (_patternStatus == Running) {
+      _patternStatus = Paused;
     }
   }
 
+  // Resume a paused pattern
+  void resume() {
+    if (_patternStatus == Paused) {
+      _patternStatus = Running;
+    }
+  }
+
+  void loop() {
+    static uint32_t lastTime          = 0;
+    static uint8_t  currentBit        = 0;
+    static uint8_t  currentRepetition = 0;
+    static bool     waitForNextBit  = false;
+
+    if (_patternStatus == StartNew) {
+      _patternStatus    = Running;
+      waitForNextBit  = false;
+      lastTime          = millis(); // was 0;
+      currentBit        = 0;
+      currentRepetition = 0;
+    } else if (_patternStatus != Running) {
+      return; // Skip if finished or paused
+    }
+
+    if (!waitForNextBit) {
+      bool bit_state = bitRead(_pattern, currentBit);
+      if (bit_state != _ledState) {
+        _ledState = bit_state;
+        digitalWrite(_ledPin, _ledState ? _activeState : !_activeState);
+      }
+      lastTime = millis();
+      waitForNextBit = true;
+    } else if (millis() - lastTime > _msecsPerBit) {
+        // ready to process the next bit
+        currentBit++;
+        waitForNextBit = false;
+        // if finished the pattern
+        if (currentBit >= _patternLength) {
+          currentBit = 0;
+          if (_repetitions > 0 && ++currentRepetition >= _repetitions) {
+            _patternStatus = Finished;
+            setOff();
+          }
+        }
+      }
+  }
+
  private:
-  uint8_t  _led_pin        = LED_BUILTIN;
-  bool     _active_state   = LOW;
-  uint32_t _pattern        = 0b0;    // 0 = all off
-  uint8_t  _pattern_length = 20;     // bits of pattern
-  uint32_t _msecs_per_bit  = 100;    // how long a bit will be on or off
-  uint8_t  _repetitions    = 0;      // 0 = repeat forever
-  bool     _locked         = false;  // if locked it won't accept changes to patterns
-  enum patten_status_t {
-    startNew,
-    processing,
-    finished
+  uint8_t  _ledPin        = LED_BUILTIN;
+  bool     _activeState   = LOW;
+  uint32_t _pattern       = 0b0;    // 0 = all off
+  uint8_t  _patternLength = 20;     // bits of pattern
+  uint32_t _msecsPerBit   = 100;    // how long a bit will be on or off
+  uint8_t  _repetitions   = 0;      // 0 = repeat forever
+  bool     _locked        = false;  // if locked it won't accept changes to patterns
+  bool     _ledState      = 0;     // current led state (On / Off)
+  enum PatternStatus {
+    StartNew,
+    Running,
+    Paused,
+    Finished
   };
-  patten_status_t _pattern_status    = finished;
-  bool            _start_new_pattern = true;  //
-  bool            _led_state         = 0;     // current led state (On / Off)
+  PatternStatus _patternStatus = Finished;
 };
 
 }; // namespace olon
